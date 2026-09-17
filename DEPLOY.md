@@ -18,16 +18,28 @@
 
 ## 0. 本地开发（端口 80）
 
+前端 `web/utils/config.js` 默认 **`API_MODE = 'container'`**——这是小程序正式可用的方式（真机、体验版、正式版都走这条，由微信内网转发，不需要域名和备案）。
+
+要本地调试，把它**临时**改成 `'local'`：
+
+```js
+// web/utils/config.js
+const API_MODE = 'local'
+const LOCAL_BASE_URL = 'http://127.0.0.1:80'
+```
+
+然后起后端：
+
 ```bash
 cd FamilyLedger
 python manage.py runserver 127.0.0.1:80 --noreload
 ```
 
-本地也走 **80 端口**，与容器一致（`Dockerfile` 的 `EXPOSE 80`、`start.sh` 的 gunicorn `--bind 0.0.0.0:80`）。
-
-对应前端 `utils/config.js`：`API_MODE = 'local'`、`LOCAL_BASE_URL = 'http://127.0.0.1:80'`。
+本地也走 **80 端口**，与容器一致（`Dockerfile` 的 `EXPOSE 80`、`start.sh` 的 gunicorn `--bind 0.0.0.0:80`）。开发者工具里需勾选「详情 → 本地设置 → 不校验合法域名」。
 
 Windows 不限制 1024 以下端口，普通权限即可绑 80；换端口时**前端 `LOCAL_BASE_URL` 要一起改**。
+
+> ⚠️ `'local'` 只能在开发者工具里用：真机上 `127.0.0.1` 指向手机自己，访问不到你的电脑。调试完记得改回 `'container'`。
 
 ## 1. 部署
 
@@ -65,6 +77,12 @@ Windows 不限制 1024 以下端口，普通权限即可绑 80；换端口时**�
 ```
 MYSQL_URL=mysql://<用户名>:<密码>@<数据库地址>:<端口>/ledger
 ```
+
+> **地址用内网还是公网**：容器与实例在同一 VPC 时用**内网地址**（形如 `10.x.x.x:3306`），不出公网、延迟低；内网地址在 VPC 外不可达，本地调试要用公网地址。
+> 仓库里的 `.env` 存的是内网地址；本地调试用环境变量覆盖即可（`settings.py` 用 `os.environ.setdefault` 注入，**真实环境变量优先于 `.env`**）：
+> ```bash
+> MYSQL_URL="mysql://root:<密码>@<公网地址>:<端口>/ledger" python3 manage.py runserver 127.0.0.1:80 --noreload
+> ```
 
 `MYSQL_URL` 优先级**高于**自动注入的 `MYSQL_*`，两边都配时以 `MYSQL_URL` 为准。
 
