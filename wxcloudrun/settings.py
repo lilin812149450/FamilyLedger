@@ -1,24 +1,37 @@
+"""
+Django settings for wxcloudrun project.
+基于微信云托管官方 Django 模板（wxcloudrun-django）改造。
+"""
 import os
 from pathlib import Path
-import time
+from urllib.parse import unquote, urlparse
 
-CUR_PATH = os.path.dirname(os.path.realpath(__file__))  
-LOG_PATH = os.path.join(os.path.dirname(CUR_PATH), 'logs') # LOG_PATH是存放日志的路径
-if not os.path.exists(LOG_PATH): os.mkdir(LOG_PATH)  # 如果不存在这个logs文件夹，就自动创建一个
-
-# Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# Quick-start development settings - unsuitable for production
-# See https://docs.djangoproject.com/en/3.2/howto/deployment/checklist/
+# 本地开发：项目根目录下的 .env 按键值注入环境变量（已存在的环境变量优先，不覆盖）。
+# 线上由云托管注入环境变量，不依赖这个文件；.env 不要提交到仓库。
+_env_file = BASE_DIR / '.env'
+if _env_file.exists():
+    for _line in _env_file.read_text(encoding='utf-8').splitlines():
+        _line = _line.strip()
+        if not _line or _line.startswith('#') or '=' not in _line:
+            continue
+        _key, _, _value = _line.partition('=')
+        os.environ.setdefault(_key.strip(), _value.strip().strip('"').strip("'"))
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-_&03zc)d*3)w-(0grs-+t-0jjxktn7k%$3y6$9=x_n_ibg4js6'
+# 线上通过云托管环境变量 DJANGO_SECRET_KEY 注入，不写死在代码里
+SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', 'wxcloudrun-family-ledger-dev-only')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+# 模板默认 True 会把完整堆栈暴露给线上，这里默认关闭
+DEBUG = os.environ.get('DJANGO_DEBUG', 'false').lower() == 'true'
 
 ALLOWED_HOSTS = ['*']
+
+# 小程序接口不带结尾斜杠。若为 True，CommonMiddleware 会对 /api/login 发 301 重定向，
+# POST 的 body 会在跳转中丢掉。
+APPEND_SLASH = False
 
 # Application definition
 
@@ -29,7 +42,7 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
-    'wxcloudrun'
+    'wxcloudrun',
 ]
 
 MIDDLEWARE = [
@@ -62,23 +75,46 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'wxcloudrun.wsgi.application'
 
-# Database
-# https://docs.djangoproject.com/en/3.2/ref/settings/#databases
+# ===== 数据库：云托管 MySQL =====
+# 两种配置方式，凭据一律只走环境变量 / .env，不写进代码：
+#   1) MYSQL_URL  整串连接串，形如 mysql://user:pass@host:port/dbname
+#   2) MYSQL_ADDRESS / MYSQL_USERNAME / MYSQL_PASSWORD / MYSQL_DATABASE
+#      云托管绑定 MySQL 后会自动注入这四个分段变量
+# 注意：模板原来直接 os.environ.get("MYSQL_ADDRESS").split(':')，没绑定 MySQL 时会
+# 因 NoneType 直接崩，这里全部给了兜底。
+_db_url = os.environ.get('MYSQL_URL', '').strip()
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.mysql',
-        'NAME': os.environ.get("MYSQL_DATABASE", 'django_demo'),
-        'USER': os.environ.get("MYSQL_USERNAME"),
-        'HOST': os.environ.get("MYSQL_ADDRESS").split(':')[0],
-        'PORT': os.environ.get("MYSQL_ADDRESS").split(':')[1],
-        'PASSWORD': os.environ.get("MYSQL_PASSWORD"),
-        'OPTIONS': {'charset': 'utf8mb4'},
+if _db_url:
+    _parsed = urlparse(_db_url)
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.mysql',
+            'NAME': unquote(_parsed.path.lstrip('/')) or 'ledger',
+            'USER': unquote(_parsed.username or ''),
+            'PASSWORD': unquote(_parsed.password or ''),
+            'HOST': _parsed.hostname or '127.0.0.1',
+            'PORT': str(_parsed.port or 3306),
+            'CONN_MAX_AGE': 60,
+            'OPTIONS': {'charset': 'utf8mb4'},
+        }
     }
-}
+else:
+    _address = os.environ.get('MYSQL_ADDRESS', '127.0.0.1:3306')
+    _host, _, _port = _address.partition(':')
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.mysql',
+            'NAME': os.environ.get('MYSQL_DATABASE', 'ledger'),
+            'USER': os.environ.get('MYSQL_USERNAME', 'root'),
+            'PASSWORD': os.environ.get('MYSQL_PASSWORD', ''),
+            'HOST': _host or '127.0.0.1',
+            'PORT': _port or '3306',
+            'CONN_MAX_AGE': 60,
+            'OPTIONS': {'charset': 'utf8mb4'},
+        }
+    }
 
 # Password validation
-# https://docs.djangoproject.com/en/3.2/ref/settings/#auth-password-validators
 
 AUTH_PASSWORD_VALIDATORS = [
     {
@@ -95,98 +131,44 @@ AUTH_PASSWORD_VALIDATORS = [
     },
 ]
 
+# 日志直接输出到 stdout，便于在云托管「日志」里排查。
+# 模板原来是写 logs/ 目录下的轮转文件，容器里既占空间又看不到。
 LOGGING = {
     'version': 1,
-    'disable_existing_loggers': True,
+    'disable_existing_loggers': False,
     'formatters': {
-        # 日志格式
         'standard': {
-            'format': '[%(asctime)s] [%(filename)s:%(lineno)d] [%(module)s:%(funcName)s] '
-                      '[%(levelname)s]- %(message)s'},
-        'simple': {  # 简单格式
-            'format': '%(levelname)s %(message)s'
+            'format': '[%(asctime)s] [%(name)s:%(lineno)d] [%(levelname)s] %(message)s',
         },
     },
-    # 过滤
-    'filters': {
-    },
-    # 定义具体处理日志的方式
     'handlers': {
-        # 默认记录所有日志
-        'default': {
-            'level': 'INFO',
-            'class': 'logging.handlers.RotatingFileHandler',
-            'filename': os.path.join(LOG_PATH, 'all-{}.log'.format(time.strftime('%Y-%m-%d'))),
-            'maxBytes': 1024 * 1024 * 5,  # 文件大小
-            'backupCount': 5,  # 备份数
-            'formatter': 'standard',  # 输出格式
-            'encoding': 'utf-8',  # 设置默认编码，否则打印出来汉字乱码
-        },
-        # 输出错误日志
-        'error': {
-            'level': 'ERROR',
-            'class': 'logging.handlers.RotatingFileHandler',
-            'filename': os.path.join(LOG_PATH, 'error-{}.log'.format(time.strftime('%Y-%m-%d'))),
-            'maxBytes': 1024 * 1024 * 5,  # 文件大小
-            'backupCount': 5,  # 备份数
-            'formatter': 'standard',  # 输出格式
-            'encoding': 'utf-8',  # 设置默认编码
-        },
-        # 控制台输出
         'console': {
-            'level': 'DEBUG',
-            'class': 'logging.StreamHandler',
-            'formatter': 'standard'
-        },
-        # 输出info日志
-        'info': {
             'level': 'INFO',
-            'class': 'logging.handlers.RotatingFileHandler',
-            'filename': os.path.join(LOG_PATH, 'info-{}.log'.format(time.strftime('%Y-%m-%d'))),
-            'maxBytes': 1024 * 1024 * 5,
-            'backupCount': 5,
+            'class': 'logging.StreamHandler',
             'formatter': 'standard',
-            'encoding': 'utf-8',  # 设置默认编码
         },
     },
-    # 配置用哪几种 handlers 来处理日志
+    'root': {'handlers': ['console'], 'level': 'INFO'},
     'loggers': {
-        # 类型 为 django 处理所有类型的日志， 默认调用
-        'django': {
-            'handlers': ['default', 'console'],
-            'level': 'INFO',
-            'propagate': False
-        },
-        # log 调用时需要当作参数传入
-        'log': {
-            'handlers': ['error', 'info', 'console', 'default'],
-            'level': 'INFO',
-            'propagate': True
-        },
-    }
+        'django': {'handlers': ['console'], 'level': 'INFO', 'propagate': False},
+        'log': {'handlers': ['console'], 'level': 'INFO', 'propagate': True},
+    },
 }
 
 # Internationalization
-# https://docs.djangoproject.com/en/3.2/topics/i18n/
 
-LANGUAGE_CODE = 'en-us'
+LANGUAGE_CODE = 'zh-hans'
 
-TIME_ZONE = 'UTC'
+TIME_ZONE = 'Asia/Shanghai'
 
-USE_I18N = True
-
-USE_L10N = True
+USE_I18N = False
 
 USE_TZ = False
 
 # Static files (CSS, JavaScript, Images)
-# https://docs.djangoproject.com/en/3.2/howto/static-files/
 
 STATIC_URL = '/static/'
 
 # Default primary key field type
-# https://docs.djangoproject.com/en/3.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
-
-LOGS_DIR = '/data/logs/'

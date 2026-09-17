@@ -1,0 +1,7 @@
+# Dockerfile 里有 `COPY . .`，必须把本地凭据排除掉，否则密码会被打进镜像
+.env
+.env.local
+logs/
+__pycache__/
+*.pyc
+*.sqlite3
